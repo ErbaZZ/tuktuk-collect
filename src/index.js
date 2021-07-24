@@ -10,7 +10,6 @@ const WALLET_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const WEBSOCKET_PROVIDER = process.env.RPC_URL ? process.env.RPC_URL : "wss://bsc-ws-node.nariox.org:443";
 const MIN_SHARE_TO_COLLECT = process.env.MIN_SHARE_TO_COLLECT ? parseFloat(process.env.MIN_SHARE_TO_COLLECT) : 100;
 
-
 // ==== Connection ====
 
 const provider = new Web3.providers.WebsocketProvider(WEBSOCKET_PROVIDER, {
@@ -112,10 +111,10 @@ async function redeem(dollarAmount, gasPrice) {
     });
 }
 
-async function collectRedemption(_gasPrice) {
+function collectRedemption(_gasPrice) {
     lastGas = _gasPrice;
     const gasPrice = web3.utils.toWei(_gasPrice.toString(), 'gwei');
-    await pool.methods.collectRedemption().send({
+    return pool.methods.collectRedemption().send({
         gas: 900000,
         gasPrice: gasPrice
     }).on('transactionHash', (transactionHash) => { // Tx submitted
@@ -126,7 +125,6 @@ async function collectRedemption(_gasPrice) {
         isBeforeTransfer = false;
         myPendingTxCount = 0;
         lastGas = 0;
-        await updateBalance();
     }).on('error', async (error) => { // Tx error
         console.warn(error);
         myPendingTxCount--;
@@ -136,10 +134,10 @@ async function collectRedemption(_gasPrice) {
             isBeforeTransfer = false;
             myPendingTxCount = 0;
             lastGas = 0;
-            // Nothing should change, but update just in case
-            await updateBalance();
         }
-    });
+    }).then(() => { // After tx
+        return updateBalance();
+    })
 }
 
 async function updateBalance() {
@@ -173,7 +171,7 @@ async function main() {
         if (parseFloat(shareInReserve) > parseFloat(shareToCollect) && parseFloat(shareToCollect) >= MIN_SHARE_TO_COLLECT) {
             isOngoing = true;
             myPendingTxCount = 1;
-            await collectRedemption(10);
+            collectRedemption(10);
         }
         // Do non-required time consuming tasks to run after sending the transaction
         sharePrice = await getPriceBNB() / await getPriceTUK();
@@ -184,8 +182,8 @@ async function main() {
         console.log('==========');
     });
 
-    pendingSubscription.on('data', async (txHash) => {
-        web3.eth.getTransaction(txHash).then(async (pendingTx) => {
+    pendingSubscription.on('data', (txHash) => {
+        web3.eth.getTransaction(txHash).then( (pendingTx) => {
             try {
                 // Ignore own transaction
                 if (pendingTx.from === WALLET_ADDRESS) return;
@@ -215,7 +213,7 @@ async function main() {
                             isBeforeTransfer = true;
                             isOngoing = true;
                             myPendingTxCount = 1;
-                            await collectRedemption(gasPrice);
+                            collectRedemption(gasPrice);
                         }
                     }
                     return;
@@ -235,7 +233,7 @@ async function main() {
                     const newGas = Math.max(gasPrice + 1, lastGas * 1.1);
                     myPendingTxCount++;
                     console.log(`Updating gas: ${lastGas} -> ${newGas}`);
-                    await collectRedemption(newGas);
+                    collectRedemption(newGas);
                 }
 
             } catch (error) {
