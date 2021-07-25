@@ -41,7 +41,7 @@ web3.eth.accounts.wallet.add(WALLET_PRIVATE_KEY);
 import ContractAddress from './ContractAddress.json';
 const COLLATERAL_RESERVE_ADDRESS = ContractAddress.CollateralReserve;
 const POOL_ADDRESS = ContractAddress.Pool;
-const TUKROUTER_ADDRESS = ContractAddress.TukTukRouter
+const TUKROUTER_ADDRESS = ContractAddress.TukTukRouter;
 const TUK_LP_ADDRESS = ContractAddress.TUKPair;
 const BUSD_LP_ADDRESS = ContractAddress.BUSDPair;
 const TUK_ADDRESS = ContractAddress.TukTukToken;
@@ -104,6 +104,7 @@ async function redeem(dollarAmount, gasPrice) {
         web3.utils.toWei(minShareAmount.toString()),
         web3.utils.toWei(minCollateralAmount.toString())
     ).send({
+        from: WALLET_ADDRESS,
         gas: 900000,
         gasPrice: web3.utils.toWei((gasPrice + 1).toString(), 'gwei'),
     }).on('transactionHash', function (transactionHash) {
@@ -115,6 +116,7 @@ function collectRedemption(_gasPrice) {
     lastGas = _gasPrice;
     const gasPrice = web3.utils.toWei(_gasPrice.toString(), 'gwei');
     return pool.methods.collectRedemption().send({
+        from: WALLET_ADDRESS,
         gas: 900000,
         gasPrice: gasPrice
     }).on('transactionHash', (transactionHash) => { // Tx submitted
@@ -137,7 +139,7 @@ function collectRedemption(_gasPrice) {
         }
     }).then(() => { // After tx
         return updateBalance();
-    })
+    });
 }
 
 async function updateBalance() {
@@ -166,7 +168,7 @@ async function main() {
 
         console.log("Block: " + block.number);
         shareInReserve = web3.utils.fromWei(await tuk.methods.balanceOf(COLLATERAL_RESERVE_ADDRESS).call());
-        
+
         // Enough share in reserve to collect
         if (parseFloat(shareInReserve) > parseFloat(shareToCollect) && parseFloat(shareToCollect) >= MIN_SHARE_TO_COLLECT) {
             isOngoing = true;
@@ -182,64 +184,62 @@ async function main() {
         console.log('==========');
     });
 
-    pendingSubscription.on('data', (txHash) => {
-        web3.eth.getTransaction(txHash).then( (pendingTx) => {
-            try {
-                // Ignore own transaction
-                if (pendingTx.from === WALLET_ADDRESS) return;
-                // Not interested in other transactions
-                if (pendingTx.to !== TUK_ADDRESS && pendingTx.to !== POOL_ADDRESS) return;
+    pendingSubscription.on('data', async (txHash) => {
+        const pendingTx = await web3.eth.getTransaction(txHash);
+        try {
+            // Ignore own transaction
+            if (pendingTx.from === WALLET_ADDRESS) return;
+            // Not interested in other transactions
+            if (pendingTx.to !== TUK_ADDRESS && pendingTx.to !== POOL_ADDRESS) return;
 
-                // TODO: redeem() before when DEPLOYER buy TUK to get best TUK amount
-                // redeem(gasPrice + 1)
+            // TODO: redeem() before when DEPLOYER buy TUK to get best TUK amount
+            // redeem(gasPrice + 1)
 
-                const decodedData = abiDecoder.decodeMethod(pendingTx.input);
-                const gasPrice = parseFloat(web3.utils.fromWei(pendingTx.gasPrice, 'gwei'));
+            const decodedData = abiDecoder.decodeMethod(pendingTx.input);
+            const gasPrice = parseFloat(web3.utils.fromWei(pendingTx.gasPrice, 'gwei'));
 
-                // TUK transaction
-                if (pendingTx.to === TUK_ADDRESS) {
-                    if (isOngoing) return;
-                    // Transfer
-                    if (decodedData.name !== "transfer") return;
-                    // to CollateralReserve
-                    if (decodedData.params[0]['value'] !== COLLATERAL_RESERVE_ADDRESS) return;
+            // TUK transaction
+            if (pendingTx.to === TUK_ADDRESS) {
+                if (isOngoing) return;
+                // Transfer
+                if (decodedData.name !== "transfer") return;
+                // to CollateralReserve
+                if (decodedData.params[0]['value'] !== COLLATERAL_RESERVE_ADDRESS) return;
 
-                    const tukAmount = web3.utils.fromWei(decodedData.params[1]['value']);
-                    console.log("New TUK to CollateralReserve: " + tukAmount);
-                    // Redeeming after 
-                    if (parseFloat(tukAmount) + shareInReserve > shareToCollect && parseFloat(shareToCollect) >= MIN_SHARE_TO_COLLECT) {
-                        if (!isOngoing) {
-                            // Mark we must go after the transfer tx, no frontrun
-                            isBeforeTransfer = true;
-                            isOngoing = true;
-                            myPendingTxCount = 1;
-                            collectRedemption(gasPrice);
-                        }
+                const tukAmount = web3.utils.fromWei(decodedData.params[1]['value']);
+                console.log("New TUK to CollateralReserve: " + tukAmount);
+                // Redeeming after 
+                if (parseFloat(tukAmount) + shareInReserve > shareToCollect && parseFloat(shareToCollect) >= MIN_SHARE_TO_COLLECT) {
+                    if (!isOngoing) {
+                        // Mark we must go after the transfer tx, no frontrun
+                        isBeforeTransfer = true;
+                        isOngoing = true;
+                        myPendingTxCount = 1;
+                        collectRedemption(gasPrice);
                     }
-                    return;
                 }
-                // Pool transaction
-                {
-                    // No ongoing = no frontrun
-                    if (!isOngoing) return;
-                    // Don't frontrun transfer transaction
-                    if (isBeforeTransfer) return;
-                    // Frontrun collectRedemption function only
-                    if (decodedData.name !== "collectRedemption") return;
-                    // Do nothing when others got lower gas
-                    if (gasPrice <= lastGas) return;
-
-                    // Frontrun
-                    const newGas = Math.max(gasPrice + 1, lastGas * 1.1);
-                    myPendingTxCount++;
-                    console.log(`Updating gas: ${lastGas} -> ${newGas}`);
-                    collectRedemption(newGas);
-                }
-
-            } catch (error) {
-                //console.log(error);
+                return;
             }
-        });
+            // Pool transaction
+            {
+                // No ongoing = no frontrun
+                if (!isOngoing) return;
+                // Don't frontrun transfer transaction
+                if (isBeforeTransfer) return;
+                // Frontrun collectRedemption function only
+                if (decodedData.name !== "collectRedemption") return;
+                // Do nothing when others got lower gas
+                if (gasPrice <= lastGas) return;
+
+                // Frontrun
+                const newGas = Math.max(gasPrice + 1, lastGas * 1.1);
+                myPendingTxCount++;
+                console.log(`Updating gas: ${lastGas} -> ${newGas}`);
+                collectRedemption(newGas);
+            }
+        } catch (error) {
+            //console.log(error);
+        }
     });
 }
 
